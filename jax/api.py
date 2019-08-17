@@ -44,7 +44,7 @@ from . import ad_util
 from .core import eval_jaxpr
 from .api_util import (wraps, flatten_fun, flatten_fun_nokwargs, apply_flat_fun,
                        apply_flat_fun_nokwargs)
-from .tree_util import (process_pytree, node_types, build_tree, PyTreeDef,
+from .tree_util import (process_pytree, node_types, PyTreeDef,
                         tree_map, tree_flatten, tree_unflatten, tree_structure,
                         tree_transpose, leaf, tree_leaves, tree_multimap,
                         walk_pytree, _num_leaves)
@@ -708,6 +708,7 @@ class _TempAxisName(object):
 
 
 def soft_pmap(fun, axis_name=None):
+  assert False, "update it"
   _check_callable(fun)
   axis_name = _TempAxisName() if axis_name is None else axis_name
 
@@ -757,6 +758,7 @@ def _reshape_merge(ans):
 
 
 def _papply(fun):
+  assert False, "update it"
   # This function is for testing purposes.
   axis_name = _TempAxisName()
 
@@ -772,6 +774,7 @@ def _papply(fun):
 
 
 def _parallelize(fun):
+  assert False, "update it"
   axis_name = _TempAxisName()
 
   def pfun(*args):
@@ -1115,8 +1118,7 @@ class CustomTransformsFunction(object):
     jaxpr, _, consts = pe.trace_to_jaxpr(flat_fun, in_pvals, instantiate=True)
     outs = self.prim.bind(*it.chain(consts, args_flat), in_tree=in_tree,
                           jaxpr=jaxpr, num_consts=len(consts))
-    import ipdb; ipdb.set_trace()
-    return build_tree(out_tree(), outs)
+    return tree_unflatten(out_tree(), outs)
 
 def custom_transforms(fun):
   """Wraps a function so that its transformation behavior can be controlled.
@@ -1247,6 +1249,7 @@ def defjvp_all(fun, custom_jvp):
   """
   _check_custom_transforms_type("defjvp_all", fun)
   def custom_transforms_jvp(primals, tangents, **params):
+    assert False, "update it"
     consts, jax_kwargs, jax_args = primals[0], primals[1], primals[2:]
     consts_dot, _, jax_args_dot = tangents[0], tangents[1], tangents[2:]
     if consts_dot is not ad_util.zero:
@@ -1394,6 +1397,7 @@ def defvjp_all(fun, custom_vjp):
   """
   _check_custom_transforms_type("defvjp_all", fun)
   def custom_transforms_vjp(argnums, consts, jax_kwargs, *jax_args, **params):
+    assert False, "update it"
     if 0 in argnums:
       msg = (
           "Detected differentiation w.r.t. variables from outside the scope of "
@@ -1672,6 +1676,7 @@ def eval_shape(fun, *args, **kwargs):
   >>> print(out_shape)
   (2000, 1000)
   """
+  assert False, "update it"
   def abstractify(x):
     return ShapedArray(onp.shape(x), onp.result_type(x))
 

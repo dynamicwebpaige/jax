@@ -343,6 +343,7 @@ def add_tangents(x, y):
 
 
 def defvjp_argnums(prim, custom_vjp):
+  assert False, "update it"
   name = prim.name
 
   def fun_jvp(xs, ts, **params):
@@ -484,22 +485,6 @@ def map_transpose(primitive, params, jaxpr, consts, freevar_vals, args, ct):
   cts_out, freevar_cts = build_tree(out_tree_def(), ans)
   freevar_cts = tree_map(lambda x: x.sum(0), freevar_cts)
   return cts_out, freevar_cts
-
-def put_zeros(pack, isnonzero, x):
-  if isnonzero is True:
-    return x
-  elif isnonzero is False:
-    return zero
-  else:
-    return pack(map(partial(put_zeros, pack), isnonzero, x))
-
-def strip_zeros(unit, pack, isnonzero, x):
-  if isnonzero is True:
-    return x
-  elif isnonzero is False:
-    return unit
-  else:
-    return pack(map(partial(strip_zeros, unit, pack), isnonzero, x))
 
 def jvp_jaxpr(jaxpr, nonzeros, instantiate):
   assert len(jaxpr.in_avals) == len(nonzeros)
