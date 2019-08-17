@@ -42,17 +42,16 @@ from . import core
 from . import linear_util as lu
 from . import ad_util
 from .core import eval_jaxpr
-from .api_util import (wraps, flatten_fun, flatten_fun_nokwargs,
-                       abstract_tuple_tree_leaves, apply_flat_fun,
+from .api_util import (wraps, flatten_fun, flatten_fun_nokwargs, apply_flat_fun,
                        apply_flat_fun_nokwargs)
 from .tree_util import (process_pytree, node_types, build_tree, PyTreeDef,
                         tree_map, tree_flatten, tree_unflatten, tree_structure,
                         tree_transpose, leaf, tree_leaves, tree_multimap,
                         walk_pytree, _num_leaves)
 from .util import (unzip2, unzip3, curry, partial, safe_map, safe_zip,
-                   WrapHashably, Hashable, prod)
+                   WrapHashably, Hashable, prod, split_list)
 from .lib.xla_bridge import canonicalize_dtype, device_count
-from .abstract_arrays import ShapedArray
+from .abstract_arrays import ShapedArray, raise_to_shaped
 from .interpreters import partial_eval as pe
 from .interpreters import xla
 from .interpreters import pxla
@@ -689,13 +688,14 @@ def pmap(fun, axis_name=None):
 
   @wraps(fun)
   def f_pmapped(*args, **kwargs):
-    axis_size = _pmap_axis_size(args)
     f = lu.wrap_init(fun)
     args_flat, in_tree = tree_flatten((args, kwargs))
+    axis_size, = {x.shape[0] for x in args_flat
+                  if core.get_aval(x) is not core.AbstractUnit}
     _check_args(args_flat)
     flat_fun, out_tree = flatten_fun(f, in_tree)
-    out = pxla.xla_pmap(flat_fun, *args_flat,
-                        axis_name=axis_name, axis_size=axis_size)
+    out = pxla.xla_pmap(flat_fun, *args_flat, axis_name=axis_name,
+                        axis_size=axis_size)
     return tree_unflatten(out_tree(), out)
 
   namestr = "pmap({}, axis_name={})".format
@@ -705,21 +705,6 @@ def pmap(fun, axis_name=None):
 class _TempAxisName(object):
   def __repr__(self):
     return '<axis {}>'.format(hex(id(self)))
-
-def _pmap_axis_size(args):
-  try:
-    return next(_axis_size(leaf) for arg in args for leaf in tree_leaves(arg))
-  except StopIteration:
-    raise ValueError("pmap requires a leading axis to map over.")
-
-def _axis_size(x):
-  try:
-    return x.shape[0]
-  except AttributeError:
-    aval = core.get_aval(x)
-    if type(aval) is core.AbstractTuple:
-      return next(leaf.shape[0] for leaf in abstract_tuple_tree_leaves(aval))
-  raise ValueError("could not get axis size of type: {}".format(x))
 
 
 def soft_pmap(fun, axis_name=None):
@@ -1123,17 +1108,15 @@ class CustomTransformsFunction(object):
     return '<jax.custom_transforms function {fun}>'.format(fun=self.__name__)
 
   def __call__(self, *args, **kwargs):
-    def pv_like(x):
-      return pe.PartialVal((batching.get_aval(x), core.unit))  # Use shaped aval
-    jax_args, in_trees = unzip2(map(pytree_to_jaxtupletree, args))
-    jax_kwargs, kwargs_tree = pytree_to_jaxtupletree(kwargs)
-    jaxtree_fun, out_tree = pytree_fun_to_jaxtupletree_fun2(
-        lu.wrap_init(self.fun), kwargs_tree, in_trees)
-    pvals_in = map(pv_like, (jax_kwargs,) + jax_args)
-    jaxpr, _, consts = pe.trace_to_jaxpr(jaxtree_fun, pvals_in, instantiate=True)
-    ans = self.prim.bind(core.pack(consts), jax_kwargs, *jax_args,
-                         in_trees=in_trees, jaxpr=jaxpr)
-    return build_tree(out_tree(), ans)
+    args_flat, in_tree = tree_flatten((args, kwargs))
+    flat_fun, out_tree = flatten_fun(lu.wrap_init(self.fun), in_tree)
+    in_pvals = [pe.PartialVal((raise_to_shaped(core.get_aval(x)), core.unit))
+                for x in args_flat]
+    jaxpr, _, consts = pe.trace_to_jaxpr(flat_fun, in_pvals, instantiate=True)
+    outs = self.prim.bind(*it.chain(consts, args_flat), in_tree=in_tree,
+                          jaxpr=jaxpr, num_consts=len(consts))
+    import ipdb; ipdb.set_trace()
+    return build_tree(out_tree(), outs)
 
 def custom_transforms(fun):
   """Wraps a function so that its transformation behavior can be controlled.
@@ -1179,9 +1162,11 @@ def custom_transforms(fun):
   """
   name = getattr(fun, '__name__', '<unnamed custom_transforms primitive>')
   fun_p = core.Primitive(name)
+  fun_p.multiple_results = True
 
-  def fun_impl(consts, jax_kwargs, *jax_args, **params):
-    return core.eval_jaxpr(params['jaxpr'], consts, (), jax_kwargs, *jax_args)
+  def fun_impl(*args, **params):
+    consts, args = split_list(args, [params['num_consts']])
+    return core.eval_jaxpr(params['jaxpr'], consts, (), *args)
   fun_p.def_impl(fun_impl)
 
   def fun_jvp(primals, tangents, **params):
@@ -1189,8 +1174,8 @@ def custom_transforms(fun):
   ad.primitive_jvps[fun_p] = fun_jvp
 
   def fun_batch(batched_args, batch_dims, **params):
-    out = batching.batch(lu.wrap_init(fun_impl, params), batched_args, batch_dims, 0)
-    return out, 0
+    bfun = batching.batch_transform(lu.wrap_init(fun_impl, params), batch_dims)
+    return bfun.call_wrapped(batched_args)
   batching.primitive_batchers[fun_p] = fun_batch
 
   def fun_abstract_eval(*avals, **params):

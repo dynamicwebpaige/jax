@@ -65,12 +65,3 @@ def apply_flat_fun_nokwargs(fun, io_tree, py_args):
       raise TypeError("Expected {}, got {}".format(in_tree_expected, in_tree))
   ans = fun(*args)
   return tree_unflatten(out_tree, ans)
-
-def abstract_tuple_tree_leaves(aval):
-  if type(aval) is AbstractTuple:
-    for elt in aval:
-      # TODO(mattjj,phawkins): use 'yield from' when PY2 is dropped
-      for a in abstract_tuple_tree_leaves(elt):
-        yield a
-  else:
-    yield aval

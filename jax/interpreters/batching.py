@@ -36,13 +36,14 @@ from . import partial_eval as pe
 map = safe_map
 
 
-def batch(fun, in_vals, in_dims, out_dims):
+def batch(fun, in_vals, in_dims, out_dim_dests):
   size, = {x.shape[d] for x, d in zip(in_vals, in_dims) if d is not not_mapped}
-  return batch_transform(fun, size, in_dims, out_dims).call_wrapped(in_vals)
-
+  fun, out_dims = batch_transform(fun, size, in_dims, out_dims)
+  out_vals = fun.call_wrapped(in_vals)
+  return map(partial(matchaxis, size), out_dims, out_dim_dests(), out_vals)
 
 @transformation
-def batch_transform(size, in_dims, out_dim_dests, vals):
+def batch_transform(in_dims, vals):
   with new_master(BatchTrace) as master:
     trace = BatchTrace(master, core.cur_sublevel())
     in_tracers = map(partial(BatchTracer, trace), vals, in_dims)
@@ -50,13 +51,13 @@ def batch_transform(size, in_dims, out_dim_dests, vals):
     out_tracers = map(trace.full_raise, outs)
     out_vals, out_dims = unzip2((t.val, t.batch_dim) for t in out_tracers)
     del master, out_tracers
-  yield map(partial(matchaxis, size), out_dims, out_dim_dests(), out_vals)
-
+  yield out_vals, out_dims
 
 @transformation_with_aux
 def batch_subtrace(master, dims, *vals):
   trace = BatchTrace(master, core.cur_sublevel())
-  outs = yield map(partial(BatchTracer, trace), vals, dims), {}
+  in_tracers = map(partial(BatchTracer, trace), vals, dims)
+  outs = yield in_tracers, {}
   out_tracers = map(trace.full_raise, outs)
   yield unzip2((t.val, t.batch_dim) for t in out_tracers)
 

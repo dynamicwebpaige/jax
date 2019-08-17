@@ -344,13 +344,10 @@ def _shard_sharded_device_array(x, ordinals, assignments):
     return (device_put(x[assignments[r]], ordinals[r]) for r in range(n))
 shard_arg_handlers[ShardedDeviceArray] = _shard_sharded_device_array
 
-# TODO
-
 core.pytype_aval_mappings[ShardedDeviceArray] = ConcreteArray
 xla.pytype_aval_mappings[ShardedDeviceArray] = lambda x: x.aval
 xla.canonicalize_dtype_handlers[ShardedDeviceArray] = identity
-xb.register_constant_handler(ShardedDeviceArray,
-                             xla._device_array_constant_handler)
+xb.register_constant_handler(ShardedDeviceArray, xla._device_array_constant_handler)
 
 
 class ChunkedDeviceArray(ShardedDeviceArray):
@@ -363,6 +360,8 @@ class ChunkedDeviceArray(ShardedDeviceArray):
 
   def __getitem__(self, idx):
     return xla.DeviceArray.__getitem__(self, idx)
+
+shard_arg_handlers[ChunkedDeviceArray] = _shard_array
 
 core.pytype_aval_mappings[ChunkedDeviceArray] = ConcreteArray
 xla.pytype_aval_mappings[ChunkedDeviceArray] = lambda x: x.aval
