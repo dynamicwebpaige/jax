@@ -1110,14 +1110,16 @@ class CustomTransformsFunction(object):
   def __repr__(self):
     return '<jax.custom_transforms function {fun}>'.format(fun=self.__name__)
 
-  def __call__(self, *args, **kwargs):
-    args_flat, in_tree = tree_flatten((args, kwargs))
-    flat_fun, out_tree = flatten_fun(lu.wrap_init(self.fun), in_tree)
+  def __call__(self, *args):
+    # TODO(mattjj): instead of tracing to a jaxpr, use process_call
+    args_flat, in_tree = tree_flatten(args)
+    flat_fun, out_tree = flatten_fun_nokwargs(lu.wrap_init(self.fun), in_tree)
     in_pvals = [pe.PartialVal((raise_to_shaped(core.get_aval(x)), core.unit))
                 for x in args_flat]
     jaxpr, _, consts = pe.trace_to_jaxpr(flat_fun, in_pvals, instantiate=True)
-    outs = self.prim.bind(*it.chain(consts, args_flat), in_tree=in_tree,
-                          jaxpr=jaxpr, num_consts=len(consts))
+    outs = self.prim.bind(*it.chain(consts, args_flat), jaxpr=jaxpr,
+                          in_tree=in_tree, out_tree=out_tree(),
+                          num_consts=len(consts))
     return tree_unflatten(out_tree(), outs)
 
 def custom_transforms(fun):
@@ -1175,9 +1177,9 @@ def custom_transforms(fun):
     return ad.jvp(lu.wrap_init(fun_impl, params)).call_wrapped(primals, tangents)
   ad.primitive_jvps[fun_p] = fun_jvp
 
-  def fun_batch(batched_args, batch_dims, **params):
-    bfun = batching.batch_transform(lu.wrap_init(fun_impl, params), batch_dims)
-    return bfun.call_wrapped(batched_args)
+  def fun_batch(args, dims, **params):
+    bfun, out_dims = batching.batch_transform(lu.wrap_init(fun_impl, params), dims)
+    return bfun.call_wrapped(args), out_dims()
   batching.primitive_batchers[fun_p] = fun_batch
 
   def fun_abstract_eval(*avals, **params):
@@ -1396,32 +1398,20 @@ def defvjp_all(fun, custom_vjp):
   (4.0, 3.0)
   """
   _check_custom_transforms_type("defvjp_all", fun)
-  def custom_transforms_vjp(argnums, consts, jax_kwargs, *jax_args, **params):
-    assert False, "update it"
-    if 0 in argnums:
-      msg = (
-          "Detected differentiation w.r.t. variables from outside the scope of "
-          "{}, but defvjp and defvjp_all only support differentiation w.r.t. "
-          "positional arguments.")
-      raise ValueError(msg.format(str(fun)))
-    if jax_kwargs:
-      msg = ("defvjp_all requires the corresponding custom_transforms function "
-             "not to be called with keyword arguments.")
-      raise ValueError(msg)
-    args = map(build_tree, params['in_trees'], jax_args)
-    pytree_out, vjp_pytree = custom_vjp(*args)
-    out, out_tree = pytree_to_jaxtupletree(pytree_out)
-    def vjp_pytree_(ct):
-      args_cts = tuple(vjp_pytree(ct))
-      if len(args_cts) != len(params['in_trees']):
-        msg = ("custom VJP function must return a tuple of length equal to the "
-               "number of positional arguments to the function being "
-               "differentiated: expected {}, got {}")
-        raise TypeError(msg.format(len(params['in_trees']), len(args_cts)))
-      return ((), {},) + args_cts
-    vjp, _ = pytree_fun_to_jaxtupletree_fun(lu.wrap_init(vjp_pytree_), (out_tree,))
-    return out, vjp.call_wrapped
-  ad.defvjp_argnums(fun.prim, custom_transforms_vjp)
+  def custom_transforms_vjp(*consts_and_args, **params):
+    num_consts, in_tree = params['num_consts'], params['in_tree']
+    consts, args_flat = split_list(consts_and_args, [num_consts])
+    args = tree_unflatten(params['in_tree'], args_flat)
+    out, vjp = custom_vjp(*args)
+    out_flat, out_tree = tree_flatten(out)
+    assert out_tree == params['out_tree']
+    def vjp_flat(*cts_flat):
+      cts = tree_unflatten(out_tree, cts_flat)
+      args_cts_flat, in_tree2 = tree_flatten(vjp(cts))
+      assert in_tree == in_tree2
+      return [None] * num_consts + list(args_cts_flat)
+    return out_flat, vjp_flat
+  ad.defvjp_all(fun.prim, custom_transforms_vjp)
 
 def defvjp(fun, *vjprules):
   """Define VJP rules for each argument separately.
@@ -1468,8 +1458,9 @@ def defvjp(fun, *vjprules):
   def custom_vjp(*primals):
     ans = fun(*primals)
     # TODO(mattjj): avoid instantiating zeros?
-    vjpfun = lambda ct: [vjp(ct, ans, *primals) if vjp else ad_util.zeros_like_jaxval(x)
-                         for x, vjp in zip(primals, vjprules)]
+    def vjpfun(ct):
+      return tuple(vjp(ct, ans, *primals) if vjp else ad_util.zeros_like_jaxval(x)
+                   for x, vjp in zip(primals, vjprules))
     return ans, vjpfun
   defvjp_all(fun, custom_vjp)
 

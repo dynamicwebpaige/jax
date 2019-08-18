@@ -342,49 +342,38 @@ def add_tangents(x, y):
     return add_jaxvals(x, y)
 
 
-def defvjp_argnums(prim, custom_vjp):
-  assert False, "update it"
+def defvjp_all(prim, custom_vjp):
+  # see https://github.com/google/jax/pull/636
   name = prim.name
 
   def fun_jvp(xs, ts, **params):
-    params['vjp_argnums'] = tuple(i for i, t in enumerate(ts) if t is not zero)
-    ts = map(instantiate_zeros, xs, ts)  # TODO(mattjj): avoid instantiation?
-    primal_out, tangent_out = fun_jvp_p.bind(pack(xs), pack(ts), **params)
-    return primal_out, tangent_out
+    ts = map(instantiate_zeros, xs, ts)
+    primals_and_tangents = fun_jvp_p.bind(*it.chain(xs, ts), **params)
+    return split_list(primals_and_tangents, [len(primals_and_tangents) // 2])
   primitive_jvps[prim] = fun_jvp
 
   fun_jvp_p = core.Primitive('{name}_jvp'.format(name=name))
+  fun_jvp_p.multiple_results = True
   def fun_jvp_partial_eval(trace, *tracers, **params):
-    primals_tracer, tangents_tracer = tracers
-    argnums = params.pop('vjp_argnums')
-    primal_out, vjp_py = custom_vjp(argnums, *primals_tracer, **params)
-
-    in_aval = raise_to_shaped(get_aval(primal_out))
-    ct_pval = pe.PartialVal((in_aval, core.unit))
-    vjp_jaxpr, out_pval, residuals = pe.trace_unwrapped_to_jaxpr(
-        lambda ct: pack(vjp_py(ct)), (ct_pval,), instantiate=False)
-    out_pv, out_const = out_pval
-    tangent_out = fun_lin_p.bind(out_const, pack(residuals), tangents_tracer,
-                                 in_aval=in_aval, out_pv=out_pv, vjp_jaxpr=vjp_jaxpr)
-
-    return pack((primal_out, tangent_out))
+    primals, tangents = split_list(tracers, [len(tracers) // 2])
+    primals_out, vjp_py = custom_vjp(*primals, **params)
+    out_avals = [raise_to_shaped(get_aval(x)) for x in primals_out]
+    ct_pvals = [pe.PartialVal((aval, core.unit)) for aval in out_avals]
+    jaxpr, _, res = pe.trace_to_jaxpr(wrap_init(vjp_py), ct_pvals, instantiate=True)
+    tangents_out = fun_lin_p.bind(*it.chain(res, tangents), trans_jaxpr=jaxpr,
+                                  num_res=len(res), out_avals=out_avals)
+    return primals_out + tangents_out
   pe.custom_partial_eval_rules[fun_jvp_p] = fun_jvp_partial_eval
 
   fun_lin_p = core.Primitive('{name}_lin'.format(name=name))
-  fun_lin_p.def_abstract_eval(lambda c, r, ts, in_aval, out_pv, vjp_jaxpr: in_aval)
-  def fun_lin_transpose(ct, out_const, residuals, ts, in_aval, out_pv, vjp_jaxpr):
-    assert (ts is undefined_primal and out_const is not undefined_primal
-            and residuals is not undefined_primal)
-    ans = core.eval_jaxpr(vjp_jaxpr, residuals, (), ct)
-    out = pe.merge_pvals(ans, pe.PartialVal((out_pv, out_const)))
-    return [None, None, out]
+  fun_lin_p.multiple_results = True
+  fun_lin_p.def_abstract_eval(lambda *_, **kwargs: kwargs['out_avals'])
+  def fun_lin_transpose(cts, *args, **kwargs):
+    num_res, trans_jaxpr = kwargs['num_res'], kwargs['trans_jaxpr']
+    res, _ = split_list(args, [num_res])
+    outs = core.eval_jaxpr(trans_jaxpr, res, (), *cts)
+    return [None] * num_res + outs
   primitive_transposes[fun_lin_p] = fun_lin_transpose
-
-def defvjp_all(prim, custom_vjp):
-  # see https://github.com/google/jax/pull/636
-  def custom_vjp_(argnums, *args, **params):
-    return custom_vjp(*args, **params)
-  defvjp_argnums(prim, custom_vjp_)
 
 def defvjp(prim, *vjps):
   def vjpmaker(*primals):

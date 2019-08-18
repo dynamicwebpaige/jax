@@ -38,11 +38,11 @@ map = safe_map
 
 def batch(fun, in_vals, in_dims, out_dim_dests):
   size, = {x.shape[d] for x, d in zip(in_vals, in_dims) if d is not not_mapped}
-  fun, out_dims = batch_transform(fun, size, in_dims, out_dims)
+  fun, out_dims = batch_transform(fun, in_dims)
   out_vals = fun.call_wrapped(in_vals)
-  return map(partial(matchaxis, size), out_dims, out_dim_dests(), out_vals)
+  return map(partial(matchaxis, size), out_dims(), out_dim_dests(), out_vals)
 
-@transformation
+@transformation_with_aux
 def batch_transform(in_dims, vals):
   with new_master(BatchTrace) as master:
     trace = BatchTrace(master, core.cur_sublevel())

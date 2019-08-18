@@ -210,12 +210,11 @@ def partial_eval_wrapper(avals, *consts):
 
 def abstract_eval_fun(fun, *avals, **params):
   pvals_in = [PartialVal((a, unit)) for a in avals]
-  _, pval_outs, _ = trace_to_jaxpr(lu.wrap_init(fun, params), pvals_in,
+  _, pvals_out, _ = trace_to_jaxpr(lu.wrap_init(fun, params), pvals_in,
                                   instantiate=True)
-  avals_out, _ = unzip2(pval_out)
+  avals_out, _ = unzip2(pvals_out)
   for aval_out in avals_out:
     assert isinstance(aval_out, AbstractValue)  # instantiate=True
-  assert False, "Need callers to handle multiple avals_out now"
   return avals_out
 
 
@@ -321,14 +320,6 @@ def partial_val_aval(pv, const):
     return get_aval(const)
   else:
     raise TypeError(pv)
-
-
-def abstractify(x):
-  return PartialVal((core.concrete_aval(x), unit))
-
-def trace_unwrapped_to_jaxpr(fun, pvals, instantiate, **kwargs):
-  return trace_to_jaxpr(lu.wrap_init(fun, kwargs), pvals,
-                        instantiate=instantiate)
 
 def trace_to_jaxpr(fun, pvals, **kwargs):
   """Traces a function, given abstract inputs, to a jaxpr."""
